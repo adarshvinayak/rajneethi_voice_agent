@@ -34,19 +34,12 @@ def prewarm(proc):
     """
     logger.info("Prewarming agent...")
     
-    # Preload Silero VAD model to avoid loading delay on first call
-    # Store in process userdata for reuse across calls
-    # VAD is ENABLED and configured for phone call detection
-    # CRITICAL: Configured to WAIT for user to finish speaking before responding
-    # CRITICAL: No sample_rate specified - VAD will auto-detect from LiveKit's 48kHz audio
     proc.userdata["vad"] = silero.VAD.load(
-        min_speech_duration=0.3,      # 300ms - ensures we catch actual speech, not noise
-        min_silence_duration=1.0,      # 1 second silence - WAIT for user to finish speaking
-        activation_threshold=0.5,      # Moderate sensitivity (0.5 = balanced, less false positives)
+        min_speech_duration=0.1,      # 300ms - ensures we catch actual speech, not noise
+        min_silence_duration=0.5,      # 1 second silence - WAIT for user to finish speaking
+        activation_threshold=0.2,      # Moderate sensitivity (0.5 = balanced, less false positives)
     )
     logger.info("✅ VAD ENABLED and preloaded successfully")
-    logger.info("   - VAD will be used for turn detection")
-    logger.info("   - Settings: min_speech=0.3s, min_silence=1.0s, threshold=0.5 (WAIT-FOR-USER-TO-FINISH)")
     
     # Store flag to indicate first interaction needs instant response
     proc.userdata["first_interaction"] = True
@@ -62,8 +55,6 @@ async def entrypoint(ctx: JobContext):
     
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     
-    # Create the AI voice agent FIRST (before waiting for participant)
-    # This ensures VAD and STT are ready to process audio immediately
     agent = Agent(
         instructions="""आप “नीशा” नाम की एक पत्रकार/रिपोर्टर हैं, जो दिल्ली स्थित एक मीडिया संगठन से लोगों को कॉल कर रही हैं। इस कॉल का उद्देश्य केवल तटस्थ सर्वे करना है—किसी भी व्यक्ति को प्रभावित करना, राजनीतिक सलाह देना या किसी पार्टी/नेता का समर्थन या विरोध करना आपका काम नहीं है।
 आपका टोन हमेशा विनम्र, सम्मानजनक, स्पष्ट और तटस्थ होना चाहिए।
@@ -158,27 +149,25 @@ CRITICAL: अपनी प्रतिक्रियाएं बहुत छ�
             language="hi",
             model="nova-2",  # Nova-2 model for better Hindi support
             interim_results=True,      # Enable for faster responses
-            endpointing_ms=1500,       # 1.5 seconds - WAIT for user to finish speaking before processing
+            endpointing_ms=500,       #  WAIT for user to finish speaking before processing
             smart_format=False,
         ),
         llm=openai.LLM(
             model="gpt-4o-mini",  # Faster model for lower latency
-            temperature=0.3,  # Lower for faster, more consistent responses
+            temperature=0.2,  # Lower for faster, more consistent responses
         ),
         tts=cartesia.TTS(
             model="sonic-3",
             language="hi",  # Hindi language
             voice="28ca2041-5dda-42df-8123-f58ea9c3da00",  # Palak - Presenter (Indian accent)
-            speed=0.85,  # 15% slower for clearer, more natural speech
+            speed=0.85,  
             emotion=["positivity"],
         ),
-        # VAD is ENABLED - turn_detection is automatically handled by the agent using VAD
-        # The endpointing delays in AgentSession provide turn control
-        # VAD will detect when user starts/stops speaking to trigger STT and LLM responses
+        
         allow_interruptions=True,  # Enable interruptions - agent will stop and listen when user speaks
     )
 
-    # Set up usage metrics collection for monitoring and debugging
+    # usage metrics collection for monitoring and debugging
     usage_collector = metrics.UsageCollector()
     
     def on_metrics_collected(agent_metrics):
@@ -186,13 +175,10 @@ CRITICAL: अपनी प्रतिक्रियाएं बहुत छ�
         usage_collector.collect(agent_metrics)
         logger.info(f"[METRICS] Collected: {agent_metrics}")
     
-    # Start the agent session BEFORE waiting for participant
-    # This ensures the session is ready to receive audio as soon as tracks are published
-    # Configured to WAIT for user to finish speaking before responding
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],  # VAD ENABLED - Required for turn detection
         min_endpointing_delay=0.5,     # 500ms minimum - wait for user to pause
-        max_endpointing_delay=1.5,     # 1.5 seconds maximum - WAIT for user to finish
+        max_endpointing_delay=1,     # 1 second maximum - WAIT for user to finish
     )
     logger.info("✅ AgentSession created with VAD enabled for turn detection")
     
@@ -224,26 +210,16 @@ CRITICAL: अपनी प्रतिक्रियाएं बहुत छ�
         agent=agent,
         room=ctx.room,
         room_input_options=RoomInputOptions(
-            # Note: Noise cancellation disabled - BVC filter not available in this environment
-            # If needed, enable with: noise_cancellation=rtc.NoiseCancellationOptions(module_id='bvc', options={})
         ),
     )
     
-    logger.info("[AGENT] Session started with SMART-INTERRUPTION settings:")
-    logger.info("  - Endpointing: 0.5s min / 1.5s max (WAIT FOR USER TO FINISH)")
-    logger.info("  - Deepgram Endpointing: 1500ms (WAIT FOR USER TO FINISH SPEAKING)")
-    logger.info("  - LLM: gpt-4o-mini (FAST - optimized for low latency)")
-    logger.info("  - Noise Cancellation: Disabled (BVC filter not available)")
-    logger.info("  - VAD: Silero (min_speech=0.3s, min_silence=1.0s, threshold=0.5, WAIT-FOR-USER-TO-FINISH)")
-    logger.info("  - TTS: Cartesia Sonic-3 (Hindi, speed=0.85, voice=Palak)")
-    logger.info("  - Allow Interruptions: True (SMART RESUME)")
     
     # Wait for participant to join
     participant = await ctx.wait_for_participant()
     
     logger.info(f"[AGENT] Caller connected: {participant.identity}")
     
-    # Explicitly subscribe to audio tracks and verify they're working
+    #  subscribe to audio tracks and verify they're working
     logger.info("[AUDIO] Checking audio tracks...")
     for track_sid, publication in participant.track_publications.items():
         if publication.kind == 1:  # Audio track
@@ -262,8 +238,6 @@ CRITICAL: अपनी प्रतिक्रियाएं बहुत छ�
     
     logger.info("[AUDIO] Audio track subscription complete")
 
-    # ULTRA-FAST GREETING: Use asyncio.create_task to start greeting in parallel
-    # This ensures greeting plays IMMEDIATELY (<1s) without blocking session initialization
     logger.info("[AGENT] Triggering instant greeting (non-blocking)...")
     
     # Start greeting generation in background immediately
@@ -274,16 +248,13 @@ CRITICAL: अपनी प्रतिक्रियाएं बहुत छ�
             await asyncio.sleep(0.2)
             
             # Send greeting through session (interruptible - user can interrupt)
-            await session.say("हेलो", allow_interruptions=True)
-            logger.info("[AGENT] ⚡ Instant greeting delivered!")
+            await session.say("हेलो", allow_interruptions=False)
+            logger.info("[AGENT]  Greeting delivered!")
         except Exception as e:
             logger.warning(f"Instant greeting failed (non-critical): {e}")
     
-    # Fire and forget - don't wait for completion
     asyncio.create_task(send_instant_greeting())
     
-    logger.info("[AGENT] Greeting queued (delivering in <1s), agent ready for conversation")
-
 
 if __name__ == "__main__":
     cli.run_app(
