@@ -1,0 +1,24 @@
+# Core dependencies
+python-dotenv>=1.0.0
+
+# LiveKit Agents SDK with all required plugins
+# Note: noise_cancellation is available via livekit.rtc (included in base package)
+livekit-agents[deepgram,openai,cartesia,silero]>=1.0.0
+
+# Plivo SDK for making outbound calls
+plivo>=4.0.0
+
+# FastAPI for webhook server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6  # Required for form data parsing
+
+# Phone number validation
+phonenumbers>=8.13.0
+
+# Audio processing
+numpy>=1.26.0
+
+# HTTP client for API calls
+requests>=2.31.0
+
